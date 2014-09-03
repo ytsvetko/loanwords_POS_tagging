@@ -11,11 +11,15 @@ import argparse
 import collections
 import math
 import itertools
+import pickle
+import os
 from operator import itemgetter
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--corpus", default="../data/sw-en/data.tokenized/train.sw-en.filtered")
-parser.add_argument("--k", default=5, type=int)
+parser.add_argument("--graph_dir", default="../data/sw-graph/")
+parser.add_argument("--k", default=5, type=int, help="k in KNN")
+parser.add_argument("-f", action="store_true", help="Force re-computation of KNN graph")
 args = parser.parse_args()
 
 class Vertex(object):
@@ -93,11 +97,13 @@ class Vertex(object):
       return numerator/denominator
     #TODO self.has_suffix = False
 
-  def UpdateKNN(self, vertex):
-    cosine = self.Cosine(vertex)
+  def UpdateKNN(self, vertex, cosine=-1000):
+    if cosine == -1000:
+      cosine = self.Cosine(vertex)
     if cosine > self.knn[-1][0]:
       self.knn[-1] = (cosine, vertex)
       self.knn = sorted(self.knn, reverse=True, key=itemgetter(0))
+    return cosine
     
   def __repr__(self):
    return "*******************Vertex: {}*******************\n  Trigram_context: {}\n  Trigram: {}".format(self.name, self.trigram_context, self.trigram)
@@ -122,12 +128,26 @@ def main():
   for trigram, vertex in vertices.items():
     vertex.UpdatePMI(corpus)
 
+  
+  if not os.path.exists(args.graph_dir):
+    os.makedirs(args.graph_dir)
+
   print("Calculating KNN...")
-  for (vertex1, vertex2) in itertools.product(vertices.values(),vertices.values()):
-    if vertex1 is vertex2:
-      continue
-    vertex1.UpdateKNN(vertex2)
-      
+  if not args.f: # just load existing pre-comuted graph fron files
+    for vertex in vertices.values():
+      vertex_filename = os.path.join(args.graph_dir, "_".join(vertex.name))
+      if os.path.isfile(vertex_filename) :
+        vertex = pickle.load(open(vertex_filename, "rb"))
+  else: #force KNN calculation and save to files
+    for (vertex1, vertex2) in itertools.product(vertices.values(),vertices.values()):
+      if vertex1 is vertex2:
+        continue
+      cosine = vertex1.UpdateKNN(vertex2)
+      cosine = vertex2.UpdateKNN(vertex1, cosine)
+    print("Saving the graph...")
+    for vertex in vertices.values():
+      vertex_filename = os.path.join(args.graph_dir, "_".join(vertex.name))
+      pickle.dump(vertex, open(vertex_filename, "wb"))
     
 if __name__ == '__main__':
   main()
