@@ -10,31 +10,38 @@
 import argparse
 import collections
 import math
+import functools
+import json
 import itertools
-import pickle
 import os
+import knn
 from operator import itemgetter
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--corpus", default="../data/sw-en/data.tokenized/train.sw-en.filtered")
-parser.add_argument("--graph_dir", default="../data/sw-graph/")
+parser.add_argument("--vertices_file", default="../data/sw_vertices")
+parser.add_argument("--graph_file", default="../data/sw_knn_graph")
 parser.add_argument("--k", default=5, type=int, help="k in KNN")
 parser.add_argument("-f", action="store_true", help="Force re-computation of KNN graph")
 args = parser.parse_args()
 
 class Vertex(object):
-  def __init__(self):
-    self.trigram_context = collections.defaultdict(float)
-    self.trigram = 0.0
-    self.left_context = collections.defaultdict(float)
-    self.right_context = collections.defaultdict(float)
-    self.center_word = collections.defaultdict(float)
-    self.trigram_minus_center = collections.defaultdict(float)
-    self.left_word_plus_right_context = collections.defaultdict(float)
-    self.left_context_plus_right_word = collections.defaultdict(float)
-    #TODO self.has_suffix = False
-    self.cosine_denom_sum = 0.0
-    self.knn = [(-2.0, None)]*args.k # tuple array (distance, vertex)
+  def __init__(self, s=None):
+    if s is not None:
+      self.loads(s)     
+    else:
+      self.name = None
+      self.trigram_pmi = None
+      self.trigram = 0.0
+      self.cosine_denom_sum = 0.0
+      self.trigram_context = collections.defaultdict(float)
+      self.left_context = collections.defaultdict(float)
+      self.right_context = collections.defaultdict(float)
+      self.center_word = collections.defaultdict(float)
+      self.trigram_minus_center = collections.defaultdict(float)
+      self.left_word_plus_right_context = collections.defaultdict(float)
+      self.left_context_plus_right_word = collections.defaultdict(float)
+      #TODO self.has_suffix = False
 
   def GetDicts(self):
     return[self.trigram_context, self.left_context, self.right_context, 
@@ -97,17 +104,48 @@ class Vertex(object):
       return numerator/denominator
     #TODO self.has_suffix = False
 
-  def UpdateKNN(self, vertex, cosine=-1000):
-    if cosine == -1000:
-      cosine = self.Cosine(vertex)
-    if cosine > self.knn[-1][0]:
-      self.knn[-1] = (cosine, vertex)
-      self.knn = sorted(self.knn, reverse=True, key=itemgetter(0))
-    return cosine
-    
-  def __repr__(self):
-   return "*******************Vertex: {}*******************\n  Trigram_context: {}\n  Trigram: {}".format(self.name, self.trigram_context, self.trigram)
+  @functools.lru_cache(maxsize=1000000)
+  def Distance(self, other):
+    return 1-self.Cosine(other)
 
+  def dumps(self):
+    def StrDict(d):
+      result = {}
+      for k, v in d.items():
+        result[" ".join(k)] = v
+      return result
+
+    all_dicts = {}
+    for k, v in vars(self).items():
+      if isinstance(v, dict):
+        all_dicts[k] = StrDict(v)
+      else:
+        all_dicts[k] = v
+    return "{}\t{}\n".format(' '.join(self.name), json.dumps(all_dicts, sort_keys=True))
+
+  def loads(self, s):
+    def TupleDict(d):
+      result = {}
+      for k, v in d.items():
+        result[tuple(k.split())] = v
+      return result
+
+    name_str, dict_str = s.strip().split('\t')
+    for attr, val in json.loads(dict_str).items():
+      if isinstance(val, dict):
+        val = TupleDict(val)
+      if isinstance(val, list):
+        val = tuple(val)
+      setattr(self, attr, val)
+
+  def __repr__(self):
+   return "Vertex: {}".format(self.name)
+
+  def __lt__(self, other):
+    if self.name < other.name:
+      return True
+    return False
+    
 def LineToNgrams(line, n):
   # http://locallyoptimal.com/blog/2013/01/20/elegant-n-gram-generation-in-python/ 
   line = ["PAD_START"] + line.split() + ["PAD_END"]
@@ -115,39 +153,37 @@ def LineToNgrams(line, n):
 
 def main():
   vertices = collections.defaultdict(Vertex) # key -trigram tuple
-  corpus = Vertex()
-  print("Loading tri-grams...")
-  for line in open(args.corpus):
-    fivegrams = LineToNgrams(line, 5)
-    for fivegram in fivegrams:
-      vertices[fivegram[1:-1]].Update(fivegram)
-      corpus.Update(fivegram)
-  print("Number of Vertices: {}".format(len(vertices)))
+  if args.f or not os.path.exists(args.vertices_file):
+    corpus = Vertex()
+    print("Loading tri-grams...")
+    for line in open(args.corpus):
+      fivegrams = LineToNgrams(line, 5)
+      for fivegram in fivegrams:
+        vertices[fivegram[1:-1]].Update(fivegram)
+        corpus.Update(fivegram)
+    print("Number of Vertices: {}".format(len(vertices)))
 
-  print("Updating PMI...")
-  for trigram, vertex in vertices.items():
-    vertex.UpdatePMI(corpus)
+    print("Updating PMI...")
+    for trigram, vertex in vertices.items():
+      vertex.UpdatePMI(corpus)
 
-  
-  if not os.path.exists(args.graph_dir):
-    os.makedirs(args.graph_dir)
+    print("Write vertices to file")
+    f = open(args.vertices_file, "w")
+    for v in vertices.values():
+      f.write(v.dumps())
+  else:
+    print("Read vertices from file")
+    for line in open(args.vertices_file):
+      v = Vertex(line)
+      vertices[v.name] = v
 
-  print("Calculating KNN...")
-  if not args.f: # just load existing pre-comuted graph fron files
-    for vertex in vertices.values():
-      vertex_filename = os.path.join(args.graph_dir, "_".join(vertex.name))
-      if os.path.isfile(vertex_filename) :
-        vertex = pickle.load(open(vertex_filename, "rb"))
-  else: #force KNN calculation and save to files
-    for (vertex1, vertex2) in itertools.product(vertices.values(),vertices.values()):
-      if vertex1 is vertex2:
-        continue
-      cosine = vertex1.UpdateKNN(vertex2)
-      cosine = vertex2.UpdateKNN(vertex1, cosine)
-    print("Saving the graph...")
-    for vertex in vertices.values():
-      vertex_filename = os.path.join(args.graph_dir, "_".join(vertex.name))
-      pickle.dump(vertex, open(vertex_filename, "wb"))
-    
+  print("Building KNN graph")
+  knn_graph_builder = knn.KNN(list(vertices.values()), args.k)
+  knn_matrix = knn_graph_builder.Run()
+  if args.f or not os.path.exists(args.graph_file):
+    f = open(args.graph_file, "w")
+    for v, knn_array in sorted(knn_matrix.items()):
+      knn_str = "\t".join([" ".join(u.name) + " " + str(distance) for (u, distance) in knn_array])
+      f.write("{}\t{}\n".format(" ".join(v.name), knn_str))      
 if __name__ == '__main__':
   main()
