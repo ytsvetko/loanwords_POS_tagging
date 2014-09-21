@@ -18,7 +18,7 @@ import knn
 from operator import itemgetter
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--corpus", default="../data/sw-en/data.tokenized/train.sw-en.filtered")
+parser.add_argument("--corpus", default="../data/sw-en/data.tokenized/train.sw-en.filtered.en")
 parser.add_argument("--vertices_file", default="../data/sw_vertices")
 parser.add_argument("--graph_file", default="../data/sw_knn_graph")
 parser.add_argument("--k", default=5, type=int, help="k in KNN")
