@@ -12,6 +12,7 @@ import os
 
 POS_CONVERSIONS = {
     "NNS": "NN",
+    "NNPS": "NN",
 #    "VBD": "VB",
 #    "VBN": "VB",
 }

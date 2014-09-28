@@ -7,6 +7,7 @@
 
 import collections
 import itertools
+import time
 import random
 import sys
 from operator import itemgetter
@@ -19,17 +20,17 @@ class SortedArray(object):
     self.max = inf
     self.k = k
 
-  def add(self, value, weight):
+  def add(self, value, distance):
     if len(self.array) < self.k:
-      if (value, weight) in self.array:
+      if (value, distance) in self.array:
         return 0
-      self.array.append((value, weight))
+      self.array.append((value, distance))
     else:
-      if weight >= self.max:
+      if distance >= self.max:
         return 0
-      if (value, weight) in self.array:
+      if (value, distance) in self.array:
         return 0
-      self.array[-1] = (value, weight)
+      self.array[-1] = (value, distance)
     self.array = sorted(self.array, key=itemgetter(1))
     self.max = self.array[-1][1]
     return 1
@@ -38,47 +39,80 @@ class SortedArray(object):
     return iter(self.array)
 
 class KNN(object):
-  def __init__(self, vertices, k):
+  def __init__(self, vertices, k, filename=None):
     """Vertices have to have a "Distance(other)" method."""
     self.vertices = vertices
+    self.vertices_list = list(self.vertices.values())
     self.k = k
-    self.Bmatrix = self.RandomSample()
+    if filename:
+      self.Bmatrix = self.LoadMatrix(filename)
+    else:
+      self.Bmatrix = self.RandomSample()
 
   def RandomSample(self):
     result = {}
-    for v in self.vertices:
+    for v in self.vertices_list:
       array = SortedArray(self.k)
-      for u in random.sample(self.vertices, self.k):
+      for u in random.sample(self.vertices_list, self.k):
         if u is not v:
           array.add(u, v.Distance(u))
       result[v] = array
     return result
 
   def Reverse(self, Bmatrix):
-    result = collections.defaultdict(list)
+    def KSortedArray():
+      return SortedArray(self.k)
+    result = collections.defaultdict(KSortedArray)
     for v, sorted_array in Bmatrix.items():
-      for u, weight in sorted_array:
-        result[u].append((v, weight))
+      for u, distance in sorted_array:
+        result[u].add(v, distance)
     return result
 
-  def Run(self):
+  def Run(self, save_filename=None):
     iter_num = 0
     while True:
       iter_num += 1
+      print(time.strftime("%Y/%m/%d %H:%M:%S"), "Building reverse matrix")
       reverse = self.Reverse(self.Bmatrix)
       num_updates = 0
-      for v in self.vertices:
+      for index, v in enumerate(self.vertices_list):
+        if index % 10000 == 0:
+          print(time.strftime("%Y/%m/%d %H:%M:%S"), index)
         seen_u2 = set([v])
         for u1, w1 in list(itertools.chain(self.Bmatrix[v], reverse.get(v, []))):  # Btag[v]
           for u2, w2 in list(itertools.chain(self.Bmatrix[u1], reverse.get(u1, []))): # Btag[u1]
             if u2 not in seen_u2:
-              weight = v.Distance(u2)
-              num_updates += self.Bmatrix[v].add(u2, weight)
+              distance = v.Distance(u2)
+              num_updates += self.Bmatrix[v].add(u2, distance)
               seen_u2.add(u2)
-      print("Iteration:", iter_num, "Num updates:", num_updates)
+      print(time.strftime("%Y/%m/%d %H:%M:%S"), "Iteration:", iter_num, "Num updates:", num_updates)
+      if save_filename:
+        self.SaveMatrix(save_filename)
       if num_updates == 0:
         break
     return self.Bmatrix
+
+  def SaveMatrix(self, filename):
+    f = open(filename, "w")
+    for v, knn_array in sorted(self.Bmatrix.items()):
+      knn_str = "\t".join([" ".join(u.name) + " " + str(distance) for (u, distance) in knn_array])
+      f.write("{}\t{}\n".format(" ".join(v.name), knn_str))
+
+  def LoadMatrix(self, filename):
+    def ParseToken(token):
+      name_distance = token.split(" ")
+      return tuple(name_distance[:-1]), float(name_distance[-1])
+    matrix = {}
+    for line in open(filename):
+      tokens = line.strip().split("\t")
+      v_name = tuple(tokens[0].split(" "))
+      v = self.vertices[v_name]
+      array = SortedArray(self.k)
+      for token in tokens[1:]:
+        name, distance = ParseToken(token)
+        array.add(self.vertices[name], distance)
+      matrix[v] = array
+    return matrix
 
 if __name__ == '__main__':
   print("This is a library, not runnable by itself")

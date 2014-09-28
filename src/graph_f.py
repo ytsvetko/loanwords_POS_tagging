@@ -31,7 +31,7 @@ class Vertex(object):
       self.loads(s)     
     else:
       self.name = None
-      self.trigram_pmi = None
+      self.trigram_pmi = 0.0
       self.trigram = 0.0
       self.cosine_denom_sum = 0.0
       self.trigram_context = collections.defaultdict(float)
@@ -65,6 +65,7 @@ class Vertex(object):
     d = {}
     for k, v in d1.items():
       d[k] = math.log(v/counts_d1) - math.log(d2[k]/counts_d2)
+      #d[k] = (v/counts_d1)/(d2[k]/counts_d2)
     return d
 
   def UpdatePMI(self, corpus): 
@@ -83,7 +84,23 @@ class Vertex(object):
     self.left_context_plus_right_word = self.PMI(self.left_context_plus_right_word, self.trigram, 
         corpus.left_context_plus_right_word, corpus.trigram)
     self.trigram_pmi = math.log(corpus.trigram/self.trigram)
+    #self.trigram_pmi = self.trigram/corpus.trigram
     self.UpdateCosineDenomSum()
+
+  # To be called on a special Vertex, which will hold the max values of every feature.
+  def SetMax(self, other):
+    for d1, d2 in zip(self.GetDicts(), other.GetDicts()):
+      for k, v in d2.items():
+        if d1[k] < v:
+          d1[k] = v
+    if self.trigram_pmi < other.trigram_pmi:
+      self.trigram_pmi = other.trigram_pmi
+
+  def Normalize(self, max_vertex):
+    for d1, d2 in zip(self.GetDicts(), max_vertex.GetDicts()):
+      for k, v in d1.items():
+        d1[k] /= d2[k]
+    self.trigram_pmi /= max_vertex.trigram_pmi
 
   def UpdateCosineDenomSum(self):
     def GetSum(d):
@@ -104,7 +121,7 @@ class Vertex(object):
       return numerator/denominator
     #TODO self.has_suffix = False
 
-  @functools.lru_cache(maxsize=1000000)
+  ##@functools.lru_cache(maxsize=1000000)
   def Distance(self, other):
     return 1-self.Cosine(other)
 
@@ -151,6 +168,20 @@ def LineToNgrams(line, n):
   line = ["PAD_START"] + line.split() + ["PAD_END"]
   return zip(*[line[i:] for i in range(n)])
 
+def DebugFindKNN(trigram, k, vertices, do_print=True):
+  v = vertices.get(tuple(trigram.split()), None)
+  if v is None:
+    print(trigram, "not found")
+    return
+  array = knn.SortedArray(k)
+  for u in vertices.values():
+    if u is v:
+      continue
+    array.add(u, v.Distance(u))
+  if do_print:
+    print("\n".join([" ".join(u.name) + " " + str(distance) for (u, distance) in reversed(list(array))]))
+  return array
+
 def main():
   vertices = collections.defaultdict(Vertex) # key -trigram tuple
   if args.f or not os.path.exists(args.vertices_file):
@@ -167,6 +198,16 @@ def main():
     for trigram, vertex in vertices.items():
       vertex.UpdatePMI(corpus)
 
+    print("Calculating the max features")
+    max_vertex = Vertex()
+    for v in vertices.values():
+      max_vertex.SetMax(v)
+
+    print("Normalizing features")
+    for v in vertices.values():
+      v.Normalize(max_vertex)
+      v.UpdateCosineDenomSum()
+
     print("Write vertices to file")
     f = open(args.vertices_file, "w")
     for v in vertices.values():
@@ -176,14 +217,20 @@ def main():
     for line in open(args.vertices_file):
       v = Vertex(line)
       vertices[v.name] = v
+    print("Number of Vertices: {}".format(len(vertices)))
 
-  print("Building KNN graph")
-  knn_graph_builder = knn.KNN(list(vertices.values()), args.k)
-  knn_matrix = knn_graph_builder.Run()
+  ###### DEBUG
+  #DebugFindKNN('have to do', 10, vertices)
+  #import pdb; pdb.set_trace()
+  ###### DEBUG END
+
   if args.f or not os.path.exists(args.graph_file):
-    f = open(args.graph_file, "w")
-    for v, knn_array in sorted(knn_matrix.items()):
-      knn_str = "\t".join([" ".join(u.name) + " " + str(distance) for (u, distance) in knn_array])
-      f.write("{}\t{}\n".format(" ".join(v.name), knn_str))      
+    print("Building KNN graph")
+    knn_graph_builder = knn.KNN(vertices, args.k)
+    knn_matrix = knn_graph_builder.Run(args.graph_file)
+  else:
+    print("Loading KNN graph")
+    knn_graph_builder = knn.KNN(vertices, args.k, args.graph_file)
+
 if __name__ == '__main__':
   main()
