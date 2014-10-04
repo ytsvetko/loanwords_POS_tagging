@@ -121,11 +121,16 @@ def main():
     sw_line, en_line = corpus_line.split(" ||| ")
     sw_to_en = ExtractAlignments(sw_line.split(), en_line.split(), alignments_dict,
                                  hi_prob_pairs, projection_counter, en_pos_tags, sw_counter)
+    tags = []
     for sw, en, pos in sw_to_en:
       out_f.write(sw)
-      if en is not None:
-        out_f.write("_" + en + "_" + json.dumps(pos, sort_keys=True))
+      if en is None:
+        tags.append("")
+      else:
+        tags.append((en + " " + json.dumps(pos, sort_keys=True)))
       out_f.write(" ")
+    out_f.write(" ||| ")
+    out_f.write("\t".join(tags))
     out_f.write("\n")
 
 if __name__ == '__main__':

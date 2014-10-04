@@ -17,13 +17,16 @@ import os
 import knn
 from operator import itemgetter
 
-parser = argparse.ArgumentParser()
-parser.add_argument("--corpus", default="../data/sw-en/data.tokenized/train.sw-en.filtered.en")
-parser.add_argument("--vertices_file", default="../data/sw_vertices")
-parser.add_argument("--graph_file", default="../data/sw_knn_graph")
-parser.add_argument("--k", default=5, type=int, help="k in KNN")
-parser.add_argument("-f", action="store_true", help="Force re-computation of KNN graph")
-args = parser.parse_args()
+if __name__ == '__main__':
+  global parser, args
+  parser = argparse.ArgumentParser()
+  parser.add_argument("--corpus", default="../data/sw-en/data.tokenized/train.sw-en.filtered.en")
+  parser.add_argument("--vertices_file", default="../data/sw_vertices")
+  parser.add_argument("--graph_file", default="../data/sw_knn_graph")
+  parser.add_argument("--k", default=10, type=int, help="k in KNN")
+  parser.add_argument("-f", action="store_true", help="Force re-computation of KNN graph")
+  args = parser.parse_args()
+
 
 class Vertex(object):
   def __init__(self, s=None):
@@ -31,8 +34,7 @@ class Vertex(object):
       self.loads(s)     
     else:
       self.name = None
-      self.trigram_pmi = 0.0
-      self.trigram = 0.0
+      self.count = 0.0
       self.cosine_denom_sum = 0.0
       self.trigram_context = collections.defaultdict(float)
       self.left_context = collections.defaultdict(float)
@@ -41,89 +43,69 @@ class Vertex(object):
       self.trigram_minus_center = collections.defaultdict(float)
       self.left_word_plus_right_context = collections.defaultdict(float)
       self.left_context_plus_right_word = collections.defaultdict(float)
-      #TODO self.has_suffix = False
+      self.other_features = collections.defaultdict(float)
 
   def GetDicts(self):
     return[self.trigram_context, self.left_context, self.right_context, 
         self.center_word, self.trigram_minus_center, self.left_word_plus_right_context, 
-        self.left_context_plus_right_word]
+        self.left_context_plus_right_word, self.other_features]
 
   def Update(self, five_gram):
     """Updates the vertex given a 5-gram"""
     self.name = five_gram[1:-1]
     self.trigram_context[(five_gram[0], five_gram[-1])] += 1
-    self.trigram += 1
+    self.count += 1    
     self.left_context[five_gram[:2]] += 1
     self.right_context[five_gram[-2:]] += 1
     self.center_word[(five_gram[2],)] += 1
     self.trigram_minus_center[(five_gram[1], five_gram[3])] += 1
     self.left_word_plus_right_context[(five_gram[1], five_gram[3], five_gram[4])] += 1
     self.left_context_plus_right_word[(five_gram[0], five_gram[1], five_gram[3])] += 1
-    #TODO self.has_suffix
+    self.other_features[("trigram",)] += 1
+    #TODO
+    # if self.HasSuffix():
+    #   self.other_features[("has_suffix",)] += 1
 
-  def PMI(self, d1, counts_d1, d2, counts_d2):
-    d = {}
+  def ConvertToPMI(self, d1, counts_d1, d2, counts_d2):
     for k, v in d1.items():
-      d[k] = math.log(v/counts_d1) - math.log(d2[k]/counts_d2)
-      #d[k] = (v/counts_d1)/(d2[k]/counts_d2)
-    return d
+      d1[k] = math.log(v/counts_d1) - math.log(d2[k]/counts_d2)
+      #d1[k] = (v/counts_d1)/(d2[k]/counts_d2)
 
   def UpdatePMI(self, corpus): 
-    self.trigram_context = self.PMI(self.trigram_context, self.trigram, 
-        corpus.trigram_context, corpus.trigram) # only context, without tri-gram
-    self.left_context = self.PMI(self.left_context, self.trigram, 
-        corpus.left_context, corpus.trigram)
-    self.right_context = self.PMI(self.right_context, self.trigram, 
-        corpus.right_context, corpus.trigram)
-    self.center_word = self.PMI(self.center_word, self.trigram, 
-        corpus.center_word, corpus.trigram)
-    self.trigram_minus_center = self.PMI(self.trigram_minus_center, self.trigram, 
-        corpus.trigram_minus_center, corpus.trigram)
-    self.left_word_plus_right_context = self.PMI(self.left_word_plus_right_context, self.trigram, 
-        corpus.left_word_plus_right_context, corpus.trigram)
-    self.left_context_plus_right_word = self.PMI(self.left_context_plus_right_word, self.trigram, 
-        corpus.left_context_plus_right_word, corpus.trigram)
-    self.trigram_pmi = math.log(corpus.trigram/self.trigram)
-    #self.trigram_pmi = self.trigram/corpus.trigram
-    self.UpdateCosineDenomSum()
+    for d, corpus_d in zip(self.GetDicts(), corpus.GetDicts()):
+      self.ConvertToPMI(d, self.count, corpus_d, corpus.count)
+    self.other_features[("trigram",)] = math.log(self.count / corpus.count)
+    self.UpdateDenomSums()
 
-  # To be called on a special Vertex, which will hold the max values of every feature.
-  def SetMax(self, other):
-    for d1, d2 in zip(self.GetDicts(), other.GetDicts()):
-      for k, v in d2.items():
-        if d1[k] < v:
-          d1[k] = v
-    if self.trigram_pmi < other.trigram_pmi:
-      self.trigram_pmi = other.trigram_pmi
-
-  def Normalize(self, max_vertex):
-    for d1, d2 in zip(self.GetDicts(), max_vertex.GetDicts()):
-      for k, v in d1.items():
-        d1[k] /= d2[k]
-    self.trigram_pmi /= max_vertex.trigram_pmi
-
-  def UpdateCosineDenomSum(self):
+  def UpdateDenomSums(self):
     def GetSum(d):
       return sum([v**2 for v in d.values()])
     self.cosine_denom_sum = sum([GetSum(d) for d in self.GetDicts()])
-    self.cosine_denom_sum += self.trigram_pmi
+    self.sum_similarity_denom = sum([sum(d.values()) for d in self.GetDicts()])
 
   def Cosine(self, vertex):
     def GetNumerator(d1, d2):
       intersection = set(d1.keys()) & set(d2.keys())
       return sum([d1[k]*d2[k] for k in intersection])
     numerator = sum([GetNumerator(d1, d2) for (d1, d2) in zip(self.GetDicts(), vertex.GetDicts())])
-    numerator += self.trigram_pmi*vertex.trigram_pmi
     denominator = math.sqrt(self.cosine_denom_sum) * math.sqrt(vertex.cosine_denom_sum)
     if not denominator:
       return 0.0
     else:
       return numerator/denominator
-    #TODO self.has_suffix = False
+      
+  def Similarity(self, vertex):
+    def GetSum(d1, d2):
+      combined = set(d1.keys()) & set(d2.keys())
+      return sum( (d1[k] + d2[k] for k in combined) )
+    nominator = sum( (GetSum(d1, d2) for (d1, d2) in zip(self.GetDicts(), vertex.GetDicts())) )
+    denominator = self.sum_similarity_denom + vertex.sum_similarity_denom
+    return nominator/denominator
 
   ##@functools.lru_cache(maxsize=1000000)
   def Distance(self, other):
-    return 1-self.Cosine(other)
+    #return 1-self.Cosine(other)
+    return 1-self.Similarity(other)
 
   def dumps(self):
     def StrDict(d):
@@ -154,6 +136,7 @@ class Vertex(object):
       if isinstance(val, list):
         val = tuple(val)
       setattr(self, attr, val)
+    self.UpdateDenomSums()
 
   def __repr__(self):
    return "Vertex: {}".format(self.name)
@@ -162,10 +145,35 @@ class Vertex(object):
     if self.name < other.name:
       return True
     return False
-    
+
+def Normalize(vertices, corpus):
+  sum_dict = collections.defaultdict(float)
+  for v in vertices.values():
+    for i, d in enumerate(v.GetDicts()):
+      for k, val in d.items():
+        sum_dict[(i, k)] += val
+  
+  variance_dict = collections.defaultdict(float)
+  for v in vertices.values():
+    for i, (d, corpus_d) in enumerate(zip(v.GetDicts(), corpus.GetDicts())):
+      for k, val in d.items():
+        average = sum_dict[(i, k)] / corpus_d[k]
+        variance_dict[(i, k)] += (val - average)**2
+        d[k] -= average
+
+  for v in vertices.values():
+    for i, d in enumerate(v.GetDicts()):
+      for k in d:
+        sigma = variance_dict[(i, k)]**0.5
+        if sigma != 0.0:
+          d[k] /= sigma
+        d[k] += 1
+    v.UpdateDenomSums()
+
+
 def LineToNgrams(line, n):
   # http://locallyoptimal.com/blog/2013/01/20/elegant-n-gram-generation-in-python/ 
-  line = ["PAD_START"] + line.split() + ["PAD_END"]
+  line = ["PAD_START", "PAD_START"] + line.split() + ["PAD_END", "PAD_END"]
   return zip(*[line[i:] for i in range(n)])
 
 def DebugFindKNN(trigram, k, vertices, do_print=True):
@@ -197,21 +205,14 @@ def main():
     print("Updating PMI...")
     for trigram, vertex in vertices.items():
       vertex.UpdatePMI(corpus)
-
-    print("Calculating the max features")
-    max_vertex = Vertex()
-    for v in vertices.values():
-      max_vertex.SetMax(v)
-
+    
     print("Normalizing features")
-    for v in vertices.values():
-      v.Normalize(max_vertex)
-      v.UpdateCosineDenomSum()
+    Normalize(vertices, corpus)
 
     print("Write vertices to file")
-    f = open(args.vertices_file, "w")
-    for v in vertices.values():
-      f.write(v.dumps())
+    with open(args.vertices_file, "w") as f:
+      for v in vertices.values():
+        f.write(v.dumps())
   else:
     print("Read vertices from file")
     for line in open(args.vertices_file):

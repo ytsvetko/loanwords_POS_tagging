@@ -92,11 +92,22 @@ class KNN(object):
         break
     return self.Bmatrix
 
+  def GetMatrix(self, distance_threshold=inf):
+    result = {}
+    for v, array in self.Bmatrix.items():
+      result_array = []
+      for nn, distance in array:
+        if distance > distance_threshold:
+          break
+        result_array.append((nn, distance))
+      result[v] = result_array
+    return result
+
   def SaveMatrix(self, filename):
-    f = open(filename, "w")
-    for v, knn_array in sorted(self.Bmatrix.items()):
-      knn_str = "\t".join([" ".join(u.name) + " " + str(distance) for (u, distance) in knn_array])
-      f.write("{}\t{}\n".format(" ".join(v.name), knn_str))
+    with open(filename, "w") as f:
+      for v, knn_array in sorted(self.Bmatrix.items()):
+        knn_str = "\t".join([" ".join(u.name) + " " + str(distance) for (u, distance) in knn_array])
+        f.write("{}\t{}\n".format(" ".join(v.name), knn_str))
 
   def LoadMatrix(self, filename):
     def ParseToken(token):
